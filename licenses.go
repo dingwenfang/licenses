@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -384,6 +385,33 @@ type License struct {
 	MissingWords []string
 }
 
+func listLicensesSimple(licenseFiles []string) ([]License, error) {
+	templates, err := loadTemplates()
+	if err != nil {
+		return nil, err
+	}
+
+	licenses := []License{}
+	for _, licenseFile := range licenseFiles {
+		license := License{
+			Package: licenseFile,
+			Path:    licenseFile,
+		}
+		data, err := ioutil.ReadFile(licenseFile)
+		if err != nil {
+			return nil, err
+		}
+		m := matchTemplates(data, templates)
+		license.Score = m.Score
+		license.Template = m.Template
+		license.ExtraWords = m.ExtraWords
+		license.MissingWords = m.MissingWords
+		licenses = append(licenses, license)
+	}
+
+	return licenses, nil
+}
+
 func listLicenses(gopath string, pkgs []string) ([]License, error) {
 	templates, err := loadTemplates()
 	if err != nil {
@@ -495,6 +523,30 @@ func longestCommonPrefix(licenses []License) string {
 	return strings.Join(prefix, "/")
 }
 
+func groupLicensesSimple(licenses []License) (map[string][]License, error) {
+	licenseMap := map[string][]License{}
+	for _, l := range licenses {
+		if l.Score < 0.9 {
+			if _, ok := licenseMap["unknown license"]; ok {
+				licenseMap["unknown license"] = append(licenseMap["unknown license"], l)
+			} else {
+				licenseMap["unknown license"] = []License{l}
+			}
+
+		} else {
+			if _, ok := licenseMap[l.Template.Title]; ok {
+				licenseMap[l.Template.Title] = append(licenseMap[l.Template.Title], l)
+			} else {
+				licenseMap[l.Template.Title] = []License{l}
+			}
+
+		}
+
+	}
+	return licenseMap, nil
+
+}
+
 // groupLicenses returns the input licenses after grouping them by license path
 // and find their longest import path common prefix. Entries with empty paths
 // are left unchanged.
@@ -598,8 +650,135 @@ displayed. It helps assessing the changes importance.
 	return w.Flush()
 }
 
+func printLicensesSimple() error {
+
+	flag.Usage = func() {
+		fmt.Println(`Usage: licenses --dir
+
+licenses lists and analyse all license files in current dir if --dir is not specified.
+`)
+		os.Exit(1)
+	}
+	defaultDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	log.Printf("defaultDir:%s", defaultDir)
+
+	dir := flag.String("dir", defaultDir, "directory that contains all license files.")
+	printLicenseContent := flag.Bool("print", false, "print license file content")
+
+	flag.Parse()
+	/*if flag.NArg() < 1 {
+		return fmt.Errorf("expect at least one package argument")
+	}
+	pkgs := flag.Args()*/
+	cmd := exec.Command("find", *dir, "-name", "LICENSE")
+	log.Printf("Running command and waiting for it to finish... %v", cmd)
+
+	// open the out file for writing
+	outfile, err := os.Create(defaultDir + "/cyding_license_files.txt")
+	if err != nil {
+		return err
+	}
+	defer outfile.Close()
+	cmd.Stdout = outfile
+	//cmd.Stderr = outfile
+
+	err = cmd.Start()
+	if err != nil {
+		fmt.Print(err)
+		return err
+	}
+	cmd.Wait()
+
+	licenseFiles := []string{}
+
+	file, err := os.Open(defaultDir + "/cyding_license_files.txt")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		//fmt.Println(scanner.Text())
+		licenseFiles = append(licenseFiles, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	licenses, err := listLicensesSimple(licenseFiles)
+	if err != nil {
+		return err
+	}
+	licensesMap, err := groupLicensesSimple(licenses)
+	if err != nil {
+		return err
+	}
+	confidence := 0.9
+	i := 1
+	w := tabwriter.NewWriter(os.Stdout, 1, 4, 2, ' ', 0)
+	for k, licenses := range licensesMap {
+		licenseStart := fmt.Sprintf("========== %d of %d: %s ===========\n", i, len(licensesMap), k)
+		licenseEnd := "=============================================================\n"
+		_, err = w.Write([]byte(licenseStart))
+		if err != nil {
+			return err
+		}
+		for _, l := range licenses {
+			license := "?"
+			if l.Template != nil {
+				if l.Score > .99 {
+					license = fmt.Sprintf("%s", l.Template.Title)
+				} else if l.Score >= confidence {
+					license = fmt.Sprintf("%s (%2d%%)", l.Template.Title, int(100*l.Score))
+					if len(l.ExtraWords) > 0 {
+						license += "\n\t+words: " + strings.Join(l.ExtraWords, ", ")
+					}
+					if len(l.MissingWords) > 0 {
+						license += "\n\t-words: " + strings.Join(l.MissingWords, ", ")
+					}
+				} else {
+					license = fmt.Sprintf("? (%s, %2d%%)", l.Template.Title, int(100*l.Score))
+				}
+			} else if l.Err != "" {
+				license = strings.Replace(l.Err, "\n", " ", -1)
+			}
+			_, err = w.Write([]byte(l.Package + "\t" + license + "\n"))
+			if err != nil {
+				return err
+			}
+			if *printLicenseContent {
+				licenseContent, err := ioutil.ReadFile(l.Path)
+				if err != nil {
+					return err
+				}
+				_, err = w.Write(licenseContent)
+				if err != nil {
+					return err
+				}
+				_, err = w.Write([]byte("\n"))
+				if err != nil {
+					return err
+				}
+			}
+
+		}
+		_, err = w.Write([]byte(licenseEnd))
+		if err != nil {
+			return err
+		}
+		i++
+	}
+
+	return w.Flush()
+}
+
 func main() {
-	err := printLicenses()
+	err := printLicensesSimple()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(1)
