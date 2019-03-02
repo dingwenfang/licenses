@@ -385,11 +385,33 @@ type License struct {
 	MissingWords []string
 }
 
-func listLicensesSimple(licenseFiles []string) ([]License, error) {
+func getLibNameAndCopyrightInfo(licenseFile, basedir string) (string, []byte) {
+	dir, _ := filepath.Split(licenseFile)
+
+	libname := dir[len(basedir)+1:]
+	fmt.Println(libname + ":" + dir + ":" + basedir)
+
+	cmd := "find " + dir + " -type f | xargs grep -h 'Copyright' | sort | uniq"
+	out, err := exec.Command("bash","-c",cmd).Output()
+	if err != nil {
+			return libname, nil
+	}
+	return libname, out
+}
+
+func listLicensesSimple(licenseFiles []string, dir string) ([]License, error) {
 	templates, err := loadTemplates()
 	if err != nil {
 		return nil, err
 	}
+
+	fileName := filepath.Join(dir, "libCopyrightLicense.txt")
+	f, err := os.Create(fileName)
+	if  err != nil {
+		fmt.Println(err.Error())
+		return nil, err
+	}
+	defer f.Close()	
 
 	licenses := []License{}
 	for _, licenseFile := range licenseFiles {
@@ -397,10 +419,17 @@ func listLicensesSimple(licenseFiles []string) ([]License, error) {
 			Package: licenseFile,
 			Path:    licenseFile,
 		}
+		libName, copyrightInfo := getLibNameAndCopyrightInfo(licenseFile, dir)
 		data, err := ioutil.ReadFile(licenseFile)
 		if err != nil {
 			return nil, err
 		}
+		startLibString := strings.Repeat("=",len(libName)+4) + "\n"
+		f.WriteString("\n" + startLibString)
+		f.WriteString(libName + "\n")
+		f.WriteString(startLibString)
+		f.Write(copyrightInfo)
+		f.Write(data)
 		m := matchTemplates(data, templates)
 		license.Score = m.Score
 		license.Template = m.Template
@@ -677,7 +706,7 @@ licenses lists and analyse all license files in current dir if --dir is not spec
 	log.Printf("Running command and waiting for it to finish... %v", cmd)
 
 	// open the out file for writing
-	outfile, err := os.Create(defaultDir + "/cyding_license_files.txt")
+	outfile, err := os.Create(*dir + "/cyding_license_files.txt")
 	if err != nil {
 		return err
 	}
@@ -694,7 +723,7 @@ licenses lists and analyse all license files in current dir if --dir is not spec
 
 	licenseFiles := []string{}
 
-	file, err := os.Open(defaultDir + "/cyding_license_files.txt")
+	file, err := os.Open(*dir + "/cyding_license_files.txt")
 	if err != nil {
 		return err
 	}
@@ -710,7 +739,7 @@ licenses lists and analyse all license files in current dir if --dir is not spec
 		return err
 	}
 
-	licenses, err := listLicensesSimple(licenseFiles)
+	licenses, err := listLicensesSimple(licenseFiles, *dir)
 	if err != nil {
 		return err
 	}
