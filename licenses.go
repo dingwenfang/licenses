@@ -702,7 +702,7 @@ licenses lists and analyse all license files in current dir if --dir is not spec
 		return fmt.Errorf("expect at least one package argument")
 	}
 	pkgs := flag.Args()*/
-	cmd := exec.Command("find", *dir, "-name", "LICENSE")
+	cmd := exec.Command("find", *dir, "-name", "LICENSE*")
 	log.Printf("Running command and waiting for it to finish... %v", cmd)
 
 	// open the out file for writing
